@@ -12,7 +12,7 @@ Requirements:
 - Python packages: PyGithub, requests, gitpython
 
 Features:
-- Backs up all original repositories (excludes forks)
+- Backs up original repositories you own (excludes forks; skips org/collaborator repos unless requested)
 - Backs up all gists (sorted by creation date)
 - Clones all branches and tags
 - Submodules are NOT resolved (can be done later if needed)
@@ -45,10 +45,17 @@ import zipfile
 
 
 class GitHubBackup:
-    def __init__(self, token, username=None, enable_compression=True):
+    def __init__(
+        self,
+        token,
+        username=None,
+        enable_compression=True,
+        include_external_repos=False,
+    ):
         """Initialize GitHub backup with authentication token."""
         self.github = Github(auth=Auth.Token(token))
         self.token = token
+        self.include_external_repos = include_external_repos
         # get_user(login) uses /users/{login}/repos — public repos only.
         # get_user() (no args) uses /user/repos — includes private repos for the token owner.
         auth_user = self.github.get_user()
@@ -113,6 +120,21 @@ class GitHubBackup:
         """Log message to both console and file."""
         self.logger.info(message)
 
+    @staticmethod
+    def _is_fork_repo(repo):
+        """True if GitHub treats the repo as a fork (Epic-style private access can omit fork=true but still send parent)."""
+        if repo.fork:
+            return True
+        return repo.raw_data.get("parent") is not None
+
+    def _include_repo_in_backup(self, repo):
+        """Original repos to clone: not forks, and by default only repos owned by the backup username."""
+        if self._is_fork_repo(repo):
+            return False
+        if self.include_external_repos or self._listing_other_user:
+            return True
+        return repo.owner.login.lower() == self.username.lower()
+
     def backup_repositories(self):
         """Backup all original repositories (excluding forks)."""
         self.log("\n" + "="*50)
@@ -120,8 +142,16 @@ class GitHubBackup:
         self.log("="*50)
         
         repos = list(self.user.get_repos())
-        original_repos = [repo for repo in repos if not repo.fork]
-        fork_count = sum(1 for repo in repos if repo.fork)
+        original_repos = [repo for repo in repos if self._include_repo_in_backup(repo)]
+        fork_count = sum(1 for repo in repos if self._is_fork_repo(repo))
+        external_skipped = sum(
+            1
+            for repo in repos
+            if not self._is_fork_repo(repo)
+            and not self.include_external_repos
+            and not self._listing_other_user
+            and repo.owner.login.lower() != self.username.lower()
+        )
         public_count = sum(1 for repo in repos if not repo.private)
         private_count = sum(1 for repo in repos if repo.private)
         
@@ -130,7 +160,19 @@ class GitHubBackup:
             f"Forks: {fork_count} (skipped); "
             f"public: {public_count}; private: {private_count}"
         )
-        self.log(f"Backing up {len(original_repos)} original repositories (excluding forks)")
+        if self.include_external_repos or self._listing_other_user:
+            self.log(
+                "Including repositories outside your username "
+                "(org member / collaborator visibility)."
+            )
+        else:
+            self.log(
+                f"Scope: only repositories owned by {self.username} "
+                f"(use --include-external-repos to add org/collaborator repos)."
+            )
+        if external_skipped:
+            self.log(f"Skipped {external_skipped} repos in other namespaces (not owned by {self.username}).")
+        self.log(f"Backing up {len(original_repos)} repositories (after fork and scope filters)")
         
         # Print list of repositories to be backed up
         if original_repos:
@@ -524,6 +566,14 @@ def main():
             'If set to someone other than the token owner, only their public repos/gists are visible to the API.'
         ),
     )
+    parser.add_argument(
+        '--include-external-repos',
+        action='store_true',
+        help=(
+            'Include repos visible via organization membership or collaborator access '
+            '(not under your username), e.g. upstream org mirrors. Default is only your-namespace repos.'
+        ),
+    )
     parser.add_argument('--no-zip', action='store_true', help='Disable zip compression of backup (enabled by default)')
     
     args = parser.parse_args()
@@ -557,7 +607,12 @@ def main():
     
     # Run backup
     enable_compression = not args.no_zip
-    backup = GitHubBackup(token, args.username, enable_compression)
+    backup = GitHubBackup(
+        token,
+        args.username,
+        enable_compression,
+        include_external_repos=args.include_external_repos,
+    )
     backup.run_backup()
 
 
