@@ -49,7 +49,16 @@ class GitHubBackup:
         """Initialize GitHub backup with authentication token."""
         self.github = Github(auth=Auth.Token(token))
         self.token = token
-        self.user = self.github.get_user() if username is None else self.github.get_user(username)
+        # get_user(login) uses /users/{login}/repos — public repos only.
+        # get_user() (no args) uses /user/repos — includes private repos for the token owner.
+        auth_user = self.github.get_user()
+        requested = (username or "").strip() or None
+        if requested is None or requested.lower() == auth_user.login.lower():
+            self.user = auth_user
+            self._listing_other_user = False
+        else:
+            self.user = self.github.get_user(requested)
+            self._listing_other_user = True
         self.username = self.user.login
         self.enable_compression = enable_compression
         
@@ -70,6 +79,11 @@ class GitHubBackup:
         
         self.log(f"Backing up GitHub account: {self.username}")
         self.log(f"Backup directory: {self.backup_dir}")
+        if self._listing_other_user:
+            self.log(
+                "Note: This user is not the authenticated account. GitHub's API only "
+                "returns their public repositories and public gists; private ones are hidden."
+            )
     
     def _setup_logger(self):
         """Setup logger to write to both console and file."""
@@ -503,7 +517,13 @@ class GitHubBackup:
 def main():
     parser = argparse.ArgumentParser(description='Backup GitHub account repositories and gists')
     parser.add_argument('--token', help='GitHub personal access token (optional if .token file exists)')
-    parser.add_argument('--username', help='GitHub username (defaults to authenticated user)')
+    parser.add_argument(
+        '--username',
+        help=(
+            'GitHub username (defaults to authenticated user). '
+            'If set to someone other than the token owner, only their public repos/gists are visible to the API.'
+        ),
+    )
     parser.add_argument('--no-zip', action='store_true', help='Disable zip compression of backup (enabled by default)')
     
     args = parser.parse_args()
