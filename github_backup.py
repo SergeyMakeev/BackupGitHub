@@ -37,7 +37,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 import requests
-from github import Github
+from github import Auth, Github
 from git import Repo, GitCommandError
 import shutil
 import logging
@@ -47,7 +47,7 @@ import zipfile
 class GitHubBackup:
     def __init__(self, token, username=None, enable_compression=True):
         """Initialize GitHub backup with authentication token."""
-        self.github = Github(token)
+        self.github = Github(auth=Auth.Token(token))
         self.token = token
         self.user = self.github.get_user() if username is None else self.github.get_user(username)
         self.username = self.user.login
@@ -107,8 +107,15 @@ class GitHubBackup:
         
         repos = list(self.user.get_repos())
         original_repos = [repo for repo in repos if not repo.fork]
+        fork_count = sum(1 for repo in repos if repo.fork)
+        public_count = sum(1 for repo in repos if not repo.private)
+        private_count = sum(1 for repo in repos if repo.private)
         
         self.log(f"Found {len(repos)} total repositories")
+        self.log(
+            f"Forks: {fork_count} (skipped); "
+            f"public: {public_count}; private: {private_count}"
+        )
         self.log(f"Backing up {len(original_repos)} original repositories (excluding forks)")
         
         # Print list of repositories to be backed up
